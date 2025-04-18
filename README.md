@@ -74,8 +74,3 @@ Les résultats sont sauvegardés automatiquement dans un fichier CSV nommé selo
 ### Prérequis
 - Installation des librairies (`requirements.txt`)
 - Clé API Groq (`.env`)
-
-### Exécution
-```bash
-python main.py
-![image](https://github.com/user-attachments/assets/46e7f208-04d6-4f65-9a74-fde8a5dad644)
