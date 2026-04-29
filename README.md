@@ -1,76 +1,99 @@
-# Système de Correspondance de Candidats
+# StaffBot — Candidate-to-Job Matching
 
-Ce projet propose une solution avancée de correspondance de candidats basée sur des techniques modernes d'analyse sémantique, de scoring multicritères et d'automatisation des processus RH. L'objectif est d'identifier efficacement les candidats les plus pertinents pour un poste donné.
+> Hackathon project (HEC Montréal): given a job-posting PDF and a roster of candidate CSVs, return the top 5 candidates using LLM-extracted requirements, semantic skill/mission matching, and a weighted multi-criteria score.
 
-## Objectif
+## 🎯 Objective
 
-Automatiser et optimiser le processus de sélection des candidats en exploitant l'intelligence artificielle pour une évaluation objective et complète, minimisant ainsi les biais humains.
+Recruiters spend hours scanning candidate spreadsheets to fill a single posting. StaffBot automates the first-pass shortlist: it reads a job posting (PDF), pulls structured requirements out of it with an LLM, embeds candidate skills and past missions, and ranks the roster against the posting along four axes — semantic skill match, semantic mission match, availability, and language fit.
 
-## Structure et Fonctionnement du Projet
+The most interesting design choice: the matching pipeline **branches on the role type**. Technical roles weight skills heavily and search skills first; management roles do the inverse on missions. This decision is made automatically from the LLM's classification of the posting.
 
-Le processus global du projet est orchestré par le fichier principal `main.py`, suivant ces étapes :
+## 🏗️ Architecture
 
-### 1. Extraction des Données depuis un PDF
-- **Module :** `extract_data.py`  
-- **Fonction :** Conversion automatique du fichier PDF décrivant le poste en Markdown, facilitant l'extraction et le traitement du texte.
+*Job posting is parsed by an LLM; candidate CSVs are joined and embedded; the matching order branches on whether the role is technique (skills-first) or gestion (missions-first); a weighted global score selects the top 5.*
 
-### 2. Extraction Structurée via API Groq
-- **Module :** `llm.py`  
-- **Fonction :** Analyse du Markdown avec l'API Groq (modèle Llama-3), pour extraire les données structurées sous format JSON.
+```mermaid
+flowchart TD
+    A[Job Posting PDF] --> B[Docling + Groq Llama-3.3-70B<br/>extract structured requirements]
+    C[(Candidate CSVs<br/>users · XP · skills · lang · staffing)] --> D[Clean &amp; Join]
+    B --> E{Job category?}
+    D --> E
+    E -->|Technique| F1[Skills-first<br/>ChromaDB skill match → mission re-rank]
+    E -->|Gestion| F2[Missions-first<br/>ChromaDB mission match → skill re-rank]
+    F1 --> G[Weighted global score<br/>skills + availability + language]
+    F2 --> G
+    G --> H[Top 5 candidates → CSV]
+```
 
-### 3. Lecture des Données Candidats
-- **Module :** `csv_to_dataframe.py`  
-- **Fonction :** Chargement des données candidats provenant de fichiers CSV dans des DataFrames pandas.
+## 🛠️ Tech Stack
 
-### 4. Nettoyage et Agrégation des Données
-- **Module :** `clean_dataframes.py`  
-- **Fonction :** Suppression des doublons et agrégation des informations candidats dans un DataFrame complet et propre.
+- **PDF parsing**: [Docling](https://github.com/docling-project/docling) (`convert_pdf_to_markdown`)
+- **LLM**: [Groq](https://groq.com) running `llama-3.3-70b-versatile` for JSON extraction
+- **Vector store**: [ChromaDB](https://www.trychroma.com) (in-memory)
+- **French NLP**: [spaCy](https://spacy.io) `fr_core_news_sm` for lemmatization, [NLTK](https://www.nltk.org) for sentence tokenization
+- **Embeddings**: [SentenceTransformer](https://www.sbert.net) `all-MiniLM-L6-v2`
+- **UI / orchestration**: Streamlit
+- **Data**: pandas
 
-### 5. Recherche Sémantique sur les Compétences
-- **Module :** `semantic_search_skills.py`  
-- **Fonction :** Identification des candidats pertinents en fonction des compétences requises via ChromaDB.
+## 📊 What it does
 
-### 6. Prétraitement des Missions
-- **Module :** `preprocess_missions.py`  
-- **Fonction :** Normalisation, segmentation, lemmatisation et embeddings des missions candidats.
+For each posting, the pipeline produces three component scores plus a weighted global score (all on a 0–100 scale):
 
-### 7. Recherche Sémantique sur les Missions
-- **Module :** `semantic_search_missions.py`  
-- **Fonction :** Recherche sémantique reliant responsabilités du poste et expériences candidats.
+| Component | What it measures | How it's computed |
+|---|---|---|
+| `SCORE_SKILLS_MISSIONS` | Semantic match between posting and candidate | ChromaDB queries on top 1/6 of skills, then top 10% by `LEVEL_VAL`; combined with mission embeddings |
+| `SCORE_DISPO` | Availability | Compared against the mandate duration extracted from the posting |
+| `SCORE_LANGUAGE` | Language fit | Score on the languages the posting requires |
+| `SCORE_GLOBALE` | Weighted final | **Technique:** skills 0.80 / dispo 0.10 / lang 0.10 — **Gestion:** 0.60 / 0.25 / 0.15 |
 
-### 8. Reclassement Multicritères
-- **Module :** `ranking_skills_missions.py`  
-- **Fonction :** Calcul et combinaison des scores compétences/missions.
+The internal mission/skill re-ranking is also weighted differently per role type (technique: 0.9 skills / 0.1 missions; gestion: 0.1 / 0.9).
 
-### 9. Fusion Scores et Informations Candidats
-- **Étape :** Fusion du ranking initial avec les informations candidat prétraitées.
+## 📁 Repository Structure
 
-### 10. Score de Disponibilité
-- **Module :** `compute_disponilite.py`  
-- **Fonction :** Évaluation disponibilité candidats selon la durée du mandat.
+```
+StaffBot/
+├── main.py                          # Streamlit UI + pipeline orchestrator (12 steps)
+├── extract_data.py                  # PDF → Markdown via Docling
+├── llm.py                           # Groq Llama-3.3-70B → JSON requirements
+├── csv_to_dataframe.py              # Loads HCK_HEC_*.csv files
+├── clean_dataframes.py              # Deduplicates and joins user/XP/skills/lang/staffing
+├── semantic_search_skills.py        # ChromaDB skill match (top 1/6, then top 10% by level)
+├── preprocess_missions.py           # FR lowercase → NLTK sent-tokenize → spaCy lemma → MiniLM-L6
+├── semantic_search_missions.py      # Embedding-similarity mission match
+├── ranking_skills_missions.py       # Branch-aware re-ranking
+├── compute_disponilite.py           # Availability score
+├── language_score.py                # Language match score
+├── compute_global_score.py          # Weighted aggregation + top-N
+└── READ ME/StaffBot_flowchart.jpg   # Original French flowchart (kept for history)
+```
 
-### 11. Score de Compétences Linguistiques
-- **Module :** `language_score.py`  
-- **Fonction :** Attribution d'un score linguistique basé sur les langues exigées par l'offre.
+## 🚀 How to Run
 
-### 12. Score Global et Sélection Finale
-- **Module :** `compute_global_score.py`  
-- **Fonction :** Pondération finale des scores pour identifier les 5 meilleurs candidats.
+```bash
+pip install -r requirements.txt
+python -m spacy download fr_core_news_sm
+```
 
-## Résultats
+Set up a `.env` file:
 
-Les résultats sont sauvegardés automatiquement dans un fichier CSV nommé selon le poste (ex : `Scrum_top5_candidats.csv`).
+```
+GROQ_API_Token=your_groq_api_key
+```
 
-## Technologies Utilisées
-- Python
-- pandas
-- ChromaDB
-- LangChain
-- Groq API (Llama-3)
-- NLTK, spaCy, SentenceTransformer
+Drop `<Poste>.pdf` (e.g. `Data Analyst.pdf`, `Scrum.pdf`) and the five `HCK_HEC_*.csv` files at the project root, then:
 
-## Exécution du Projet
+```bash
+streamlit run main.py
+```
 
-### Prérequis
-- Installation des librairies (`requirements.txt`)
-- Clé API Groq (`.env`)
+Pick a posting from the dropdown; results are written to `<Poste>_top5_candidats.csv`.
+
+## 📝 Notes / Limitations
+
+- **Hackathon scope.** Built under time pressure for a HEC Montréal hackathon (`HCK_HEC_*` CSV naming). It is a working prototype, not a production matching system.
+- **Hackathon dataset is private.** The `HCK_HEC_*.csv` files (users, XP, skills, languages, staffing) are not committed. The pipeline runs locally only if you have those files plus `<Poste>.pdf`.
+- **Mixed French/English codebase.** Variable names and the Streamlit UI are in French (`catégorie_poste`, `dispo`, `Étape 1/12: ...`). Module-level docstrings are mixed. Filename `compute_disponilite.py` is a typo for `disponibilité`.
+- **Role classification is regex on a single LLM field.** `catégorie_poste` is matched against `\b\w*\s*techn?iqu[e]s?\b` and `\b\w*\s*gestion\b`. Robust enough for the hackathon, brittle for new role categories.
+- **In-memory ChromaDB.** The skills collection is rebuilt every run; no persistence and no caching of embeddings between Streamlit reruns.
+- **Top-N is hardcoded.** Always returns 5; cutoff is not configurable in the UI.
+- **No quantitative evaluation committed.** No ground-truth labels or held-out test set — outputs were judged qualitatively during the hackathon.
